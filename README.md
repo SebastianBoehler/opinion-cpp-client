@@ -68,7 +68,7 @@ The same client reads the order book with `get_orderbook` and quote tokens with 
 ## Requirements
 
 - CMake 3.22+ and a C++20 compiler
-- libcurl and OpenSSL
+- libcurl, OpenSSL, and zlib
 - Linux or macOS
 
 [nlohmann/json](https://github.com/nlohmann/json), [IXWebSocket](https://github.com/machinezone/IXWebSocket), [secp256k1](https://github.com/bitcoin-core/secp256k1), and [ethash](https://github.com/chfast/ethash) (Keccak) are fetched and pinned by hash at configure time.
