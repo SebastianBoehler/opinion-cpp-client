@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate tag and package version
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          package_version="${version%%-*}"
+          grep -Eq "project\(opinion_cpp_client VERSION ${package_version//./\\.} LANGUAGES" CMakeLists.txt
+          grep -Fq "inline constexpr const char *version_string = \"${package_version}\";" include/opinion/version.hpp
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev zlib1g-dev
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPINION_CLIENT_BUILD_EXAMPLES=ON \
+            -DOPINION_CLIENT_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --parallel 2 --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --build-config Release
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ needs.verify.outputs.tag }}
+          name: Release ${{ needs.verify.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(needs.verify.outputs.tag, '-') }}
+          generate_release_notes: true

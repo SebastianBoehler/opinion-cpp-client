@@ -1,38 +1,109 @@
+<div align="center">
+
 # opinion-cpp-client
 
-C++20 client for [Opinion.trade](https://opinion.trade) prediction markets. The layout follows [polymarket-cpp-client](https://github.com/SebastianBoehler/polymarket-cpp-client): public headers live in `include/opinion/` under namespace `opinion`, with the library, examples, and tests beside them.
+**A lightweight C++20 client for Opinion.trade.**<br>
+REST and WebSocket access to the CLOB: markets, order books, EIP-712 signing, and user streams.
 
-Public market data does not need an API key. Trading calls need an `apikey` header plus an EIP-712 signed order. This repository does not add endpoints that are absent from the Opinion docs and the official generated client.
+[![build](https://github.com/SebastianBoehler/opinion-cpp-client/actions/workflows/build.yml/badge.svg)](https://github.com/SebastianBoehler/opinion-cpp-client/actions/workflows/build.yml)
+[![license](https://img.shields.io/github/license/SebastianBoehler/opinion-cpp-client)](LICENSE)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/20)
+[![CMake](https://img.shields.io/badge/CMake-3.22%2B-064F8C?logo=cmake&logoColor=white)](https://cmake.org)
+[![platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-lightgrey)](#requirements)
+[![stars](https://img.shields.io/github/stars/SebastianBoehler/opinion-cpp-client?style=flat&logo=github)](https://github.com/SebastianBoehler/opinion-cpp-client/stargazers)
 
-## Build
+[Quick start](#quick-start) ·
+[Features](#features) ·
+[Installation](#installation) ·
+[Examples](#examples) ·
+[Docs](#documentation)
 
-Dependencies fetched by CMake: [nlohmann/json](https://github.com/nlohmann/json), [IXWebSocket](https://github.com/machinezone/IXWebSocket), [secp256k1](https://github.com/bitcoin-core/secp256k1), and [ethash](https://github.com/chfast/ethash) (Keccak). The system also needs libcurl and OpenSSL.
+</div>
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-./build/opinion_tests
-./build/opinion_markets
+---
+
+C++20 trading client for [Opinion.trade](https://opinion.trade) prediction markets. `ClobClient` calls the [OpenAPI](https://docs.opinion.trade/developer-guide/opinion-open-api/overview) CLOB over REST. `WebSocketClient` streams the [market and user channels](https://docs.opinion.trade/developer-guide/opinion-websocket/overview). Public market data does not need an API key. Trading calls need an `apikey` header plus an EIP-712 signed order.
+
+Headers live in `include/opinion/` under namespace `opinion`. This repository does not add endpoints that are absent from the Opinion docs and the official generated client.
+
+## Quick start
+
+```cpp
+#include "opinion/opinion.hpp"
+
+#include <iostream>
+
+int main()
+{
+    opinion::ClobClient client(opinion::Environment::bnb_mainnet());
+
+    opinion::MarketListQuery query;
+    query.limit = 5;
+    query.status = "activated";
+
+    const auto markets = client.list_markets(query);
+    if (!markets)
+    {
+        std::cerr << "GET /market failed: " << markets.error().message << "\n";
+        return 1;
+    }
+    std::cout << "markets total=" << markets.value().total << "\n";
+}
 ```
 
-`opinion_markets` calls the public API:
+The same client reads the order book with `get_orderbook` and quote tokens with `list_quote_tokens`. See [Examples](#examples) for signing and the WebSocket.
 
-- `GET https://openapi.opinion.trade/openapi/market`
-- `GET https://openapi.opinion.trade/openapi/token/orderbook`
-- `GET https://openapi.opinion.trade/openapi/quoteToken`
+## Features
 
-Consume the library from another CMake project with `FetchContent` and `opinion::client`.
+| Area | What you get |
+| --- | --- |
+| **Market data** | REST markets, books, latest prices, price history, labels, and quote tokens |
+| **Trading** | EIP-712 CTF order signing, `prepare_order`, `POST /order`, and `POST /order/cancel` |
+| **Account** | API-key create, get, and delete; positions, trades, fees, and balances |
+| **WebSocket** | `wss://ws.opinion.trade` with heartbeat, reconnect, and subscription replay |
+| **User stream** | Typed `trade.order.update` and `trade.record.new` callbacks |
+| **Local book** | REST snapshot plus `market.depth.diff` updates; a zero size removes the level |
+| **Errors** | `Result<T>` with typed `SdkError` (transport, HTTP, auth, rate limit, parse) |
+
+## Requirements
+
+- CMake 3.22+ and a C++20 compiler
+- libcurl, OpenSSL, and zlib
+- Linux or macOS
+
+[nlohmann/json](https://github.com/nlohmann/json), [IXWebSocket](https://github.com/machinezone/IXWebSocket), [secp256k1](https://github.com/bitcoin-core/secp256k1), and [ethash](https://github.com/chfast/ethash) (Keccak) are fetched and pinned by hash at configure time.
+
+## Installation
+
+### CMake FetchContent
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
     opinion_client
     GIT_REPOSITORY https://github.com/SebastianBoehler/opinion-cpp-client.git
-    GIT_TAG main
+    GIT_TAG main # or a release tag
 )
 FetchContent_MakeAvailable(opinion_client)
+
 target_link_libraries(your_target PRIVATE opinion::client)
 ```
+
+Check the version at runtime with `opinion::version_string` from `<opinion/version.hpp>`.
+
+### From source
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DOPINION_CLIENT_BUILD_EXAMPLES=ON \
+  -DOPINION_CLIENT_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+cmake --install build --prefix <install_prefix>
+```
+
+`opinion_tests` is offline. `opinion_markets` calls the public API.
 
 ## Hosts
 
@@ -95,11 +166,11 @@ The CTF exchange is **not** in that table. Read `ctfExchangeAddress` from `GET /
 
 `/topic`, `/topic/{topicId}`, and `/topic/multi/{topicId}` exist on the generated client and are not wrapped. The GitBook market pages are the `/market` routes above.
 
-Public limit is 5 requests/second per IP. Authenticated limit is 15 requests/second per API key. HTTP 429 is returned as a retryable error when `Retry-After` is present. An invalid `apikey` is HTTP 401 with no anonymous fallback, so public reads do not send the header.
+Public limit is 5 requests/second per IP. Authenticated limit is 15 requests/second per API key. See [Rate limiting](https://docs.opinion.trade/developer-guide/opinion-open-api/rate-limiting). HTTP 429 is returned as a retryable error when `Retry-After` is present. An invalid `apikey` is HTTP 401 with no anonymous fallback, so public reads do not send the header.
 
 ## API key auth
 
-`POST`, `GET`, and `DELETE /auth/api-key` use EIP-712, not the API key.
+`POST`, `GET`, and `DELETE /auth/api-key` use EIP-712, not the API key. Details: [Authentication](https://docs.opinion.trade/developer-guide/opinion-open-api/authentication).
 
 - Domain: `Opinion OpenAPI`, version `1`, chain id `56`, no `verifyingContract`
 - Type `OpinionApiKeyAuth`: `walletAddress` (address), `action` (string), `timestamp` (string seconds)
@@ -110,6 +181,8 @@ Public limit is 5 requests/second per IP. Authenticated limit is 15 requests/sec
 A new key can take about 15 seconds to become active. A deleted key can take about 10 seconds to stop working. The wallet must already be a registered Opinion account.
 
 Later REST calls send `apikey: <key>`. The same key is the WebSocket `apikey` query parameter.
+
+`opinion_sign` prints an API-key signature when `OPINION_PRIVATE_KEY` is set. It does not send the request.
 
 ## Orders
 
@@ -125,11 +198,9 @@ When `maker` and `signer` differ, `signatureType` defaults to `2` (`POLY_GNOSIS_
 
 Limit prices must be in `(0, 1)` with at most 6 decimal places. Amounts are scaled with the quote token's decimals (18 for BSC USDT). Set exactly one of `maker_amount_in_quote_token` or `maker_amount_in_base_token`. Market buys take quote amount only. Market sells take base amount only. `post_only` is limit-only.
 
-`opinion_sign` prints an API-key signature when `OPINION_PRIVATE_KEY` is set. It does not send the request.
-
 ## WebSocket
 
-`WebSocketClient` is a native socket (IXWebSocket) for `wss://ws.opinion.trade`. It sends `{"action":"HEARTBEAT"}` about every 30 seconds and can replay subscriptions after reconnect.
+`WebSocketClient` is a native socket (IXWebSocket) for `wss://ws.opinion.trade`. It sends `{"action":"HEARTBEAT"}` about every 30 seconds and can replay subscriptions after reconnect. Channel reference: [market channels](https://docs.opinion.trade/developer-guide/opinion-websocket/market-channels) and [user channels](https://docs.opinion.trade/developer-guide/opinion-websocket/user-channels).
 
 | Channel | Subscribe with |
 | --- | --- |
@@ -143,8 +214,50 @@ A matched trade is not an on-chain fill. `trade.record.new` is the confirmed fil
 
 `opinion_ws` prints the subscribe payload. With `OPINION_API_KEY` set, it connects, subscribes, sends one heartbeat, and disconnects.
 
+```cpp
+opinion::WebSocketClient socket;
+socket.set_url(environment.websocket_url_with_key(api_key));
+socket.subscribe(opinion::WebSocketClient::subscribe_message(
+    opinion::k_channel_depth_diff, market_id, false));
+```
+
 On-chain split, merge, redeem, and `enableTrading` are not wrapped. Those need a BSC transaction and the conditional-token ABI.
+
+## Examples
+
+Build with `-DOPINION_CLIENT_BUILD_EXAMPLES=ON`. Binaries land in `build/`.
+
+| Example | What it does |
+| --- | --- |
+| `opinion_markets` | Lists activated markets, one order book, and quote tokens (public REST) |
+| `opinion_sign` | Prints an `OpinionApiKeyAuth` signature (`OPINION_PRIVATE_KEY`); local only |
+| `opinion_ws` | Prints the depth subscribe payload, or connects when `OPINION_API_KEY` is set |
+
+## Documentation
+
+| Guide | Topic |
+| --- | --- |
+| [Opinion docs](https://docs.opinion.trade/) | Product and developer documentation |
+| [OpenAPI overview](https://docs.opinion.trade/developer-guide/opinion-open-api/overview) | REST host, envelope, and routes |
+| [Authentication](https://docs.opinion.trade/developer-guide/opinion-open-api/authentication) | EIP-712 API-key headers |
+| [Market](https://docs.opinion.trade/developer-guide/opinion-open-api/market) | Market list and detail |
+| [Order](https://docs.opinion.trade/developer-guide/opinion-open-api/order) | Order queries |
+| [WebSocket overview](https://docs.opinion.trade/developer-guide/opinion-websocket/overview) | Socket URL and heartbeat |
+| [Market channels](https://docs.opinion.trade/developer-guide/opinion-websocket/market-channels) | Depth, price, and trade channels |
+| [User channels](https://docs.opinion.trade/developer-guide/opinion-websocket/user-channels) | Order updates and confirmed fills |
+
+## Contributing
+
+Contributions are welcome. Build and test with the commands in [From source](#from-source). Pull request titles use `type: description` or `type(scope): description` (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`). CI configures CMake and builds the library, examples, and tests on Linux and macOS.
+
+Release tags are `vX.Y.Z` and must match `project(... VERSION X.Y.Z)` in `CMakeLists.txt` and `opinion::version_string` in `include/opinion/version.hpp`. Pushing that tag runs the Release workflow: it checks the version, builds, tests, and publishes the GitHub release.
+
+Bugs go to [Issues](https://github.com/SebastianBoehler/opinion-cpp-client/issues). Security reports follow [SECURITY.md](SECURITY.md).
+
+## Disclaimer
+
+This is an independent open-source project, not affiliated with or endorsed by Opinion Labs. Trading involves risk of loss. You are responsible for complying with Opinion.trade's terms and the laws of your jurisdiction.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). This project is not affiliated with Opinion Labs.
+[MIT](LICENSE)
