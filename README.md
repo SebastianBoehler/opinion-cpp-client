@@ -26,6 +26,16 @@ C++20 trading client for [Opinion.trade](https://opinion.trade) prediction marke
 
 Headers live in `include/opinion/` under namespace `opinion`. This repository does not add endpoints that are absent from the Opinion docs and the official generated client.
 
+## C++ prediction-market clients
+
+Part of a collection of C++20 clients for prediction markets:
+
+- [Polymarket](https://github.com/SebastianBoehler/polymarket-cpp-client)
+- [Limitless Exchange](https://github.com/SebastianBoehler/limitless-cpp-client)
+- [Opinion.trade](https://github.com/SebastianBoehler/opinion-cpp-client)
+
+Explore the other clients for market data, order signing, and trading on each platform.
+
 ## Quick start
 
 ```cpp
