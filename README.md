@@ -271,3 +271,5 @@ This is an independent open-source project, not affiliated with or endorsed by O
 ## License
 
 [MIT](LICENSE)
+
+Performance ports and validation: [Polymarket learnings](docs/polymarket-learnings.md).
