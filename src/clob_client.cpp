@@ -1,4 +1,6 @@
 #include "opinion/clob_client.hpp"
+#include "book_decimal.hpp"
+#include "rest_result.hpp"
 
 #include "opinion/decimal_math.hpp"
 
@@ -155,38 +157,6 @@ namespace opinion
             return {};
         }
 
-        struct Envelope
-        {
-            int code{0};
-            std::string message;
-            json result = json::object();
-        };
-
-        Envelope parse_envelope(const std::string &body)
-        {
-            const json document = json::parse(body);
-            if (!document.is_object())
-            {
-                throw std::runtime_error("response is not a JSON object");
-            }
-            Envelope envelope;
-            if (document.contains("errno") && !document["errno"].is_null())
-            {
-                envelope.code = document["errno"].get<int>();
-                envelope.message = document.value("errmsg", std::string());
-            }
-            else if (document.contains("code") && !document["code"].is_null())
-            {
-                envelope.code = document["code"].get<int>();
-                envelope.message = document.value("msg", std::string());
-            }
-            if (document.contains("result") && !document["result"].is_null())
-            {
-                envelope.result = document["result"];
-            }
-            return envelope;
-        }
-
         Market parse_market(const json &object)
         {
             Market market;
@@ -268,7 +238,10 @@ namespace opinion
 
         OrderbookLevel parse_level(const json &object)
         {
-            return OrderbookLevel{jstr(object, "price"), jstr(object, "size")};
+            OrderbookLevel level{jstr(object, "price"), jstr(object, "size")};
+            detail::decimal_view(level.price);
+            detail::decimal_view(level.size);
+            return level;
         }
 
         OrderTrade parse_trade(const json &object)
@@ -561,19 +534,17 @@ namespace opinion
     } // namespace
 
     ClobClient::ClobClient(Environment environment, ClientConfig config)
-        : environment_(std::move(environment)), api_key_(std::move(config.api_key)), http_(std::move(config.http))
+        : environment_(std::move(environment)), api_key_(std::move(config.api_key)), http_(config.http),
+          order_http_(std::move(config.http))
     {
         environment_.validate();
     }
 
     void ClobClient::set_api_key(std::string api_key) { api_key_ = std::move(api_key); }
 
-    Result<std::string> ClobClient::call(const std::string &method,
-                                         const std::string &logical_path,
-                                         const std::map<std::string, std::string> &query,
-                                         const std::string &body,
-                                         bool authenticated,
-                                         const std::map<std::string, std::string> &extra_headers) const
+    Result<json> ClobClient::call(const std::string &method, const std::string &logical_path,
+                                  const std::map<std::string, std::string> &query, const std::string &body,
+                                  bool authenticated, const std::map<std::string, std::string> &extra_headers) const
     {
         std::string url;
         try
@@ -582,14 +553,14 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<std::string>::failure(make_invalid_argument(error.what()));
+            return Result<json>::failure(make_invalid_argument(error.what()));
         }
         std::map<std::string, std::string> headers = extra_headers;
         if (authenticated)
         {
             if (api_key_.empty())
             {
-                return Result<std::string>::failure(make_http_status_error(401, logical_path, {}, {}));
+                return Result<json>::failure(make_http_status_error(401, logical_path, {}, {}));
             }
             headers["apikey"] = api_key_;
         }
@@ -597,10 +568,12 @@ namespace opinion
         {
             headers["Content-Type"] = "application/json";
         }
-        const HttpResponse response = http_.request(method, url, body, headers);
+        auto &http =
+            method == "POST" && (logical_path == "/order" || logical_path == "/order/cancel") ? order_http_ : http_;
+        const HttpResponse response = http.request(method, url, body, headers);
         if (!response.error.empty())
         {
-            return Result<std::string>::failure(make_transport_error(response.error, logical_path));
+            return Result<json>::failure(make_transport_error(response.error, logical_path));
         }
         if (!response.ok())
         {
@@ -610,21 +583,22 @@ namespace opinion
             {
                 retry_after = found->second;
             }
-            return Result<std::string>::failure(make_http_status_error(response.status_code, logical_path, response.body, retry_after));
+            return Result<json>::failure(
+                make_http_status_error(response.status_code, logical_path, response.body, retry_after));
         }
         try
         {
-            const Envelope envelope = parse_envelope(response.body);
+            auto envelope = detail::parse_envelope(response.body);
             if (envelope.code != 0)
             {
-                return Result<std::string>::failure(make_api_error(envelope.code, envelope.message, logical_path,
-                                                                   response.status_code, response.body));
+                return Result<json>::failure(
+                    make_api_error(envelope.code, envelope.message, logical_path, response.status_code, response.body));
             }
-            return Result<std::string>::success(envelope.result.dump());
+            return Result<json>::success(std::move(envelope.result));
         }
         catch (const std::exception &error)
         {
-            return Result<std::string>::failure(make_parse_error(error.what(), logical_path, excerpt_of(response.body)));
+            return Result<json>::failure(make_parse_error(error.what(), logical_path, excerpt_of(response.body)));
         }
     }
 
@@ -674,7 +648,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             MarketList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -688,7 +662,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<MarketList>::failure(make_parse_error(error.what(), "/market", raw.value()));
+            return Result<MarketList>::failure(make_parse_error(error.what(), "/market", raw.value().dump()));
         }
     }
 
@@ -701,11 +675,11 @@ namespace opinion
         }
         try
         {
-            return Result<Market>::success(parse_market_detail(json::parse(raw.value())));
+            return Result<Market>::success(parse_market_detail(raw.value()));
         }
         catch (const std::exception &error)
         {
-            return Result<Market>::failure(make_parse_error(error.what(), "/market/{marketId}", raw.value()));
+            return Result<Market>::failure(make_parse_error(error.what(), "/market/{marketId}", raw.value().dump()));
         }
     }
 
@@ -718,11 +692,12 @@ namespace opinion
         }
         try
         {
-            return Result<Market>::success(parse_market_detail(json::parse(raw.value())));
+            return Result<Market>::success(parse_market_detail(raw.value()));
         }
         catch (const std::exception &error)
         {
-            return Result<Market>::failure(make_parse_error(error.what(), "/market/categorical/{marketId}", raw.value()));
+            return Result<Market>::failure(
+                make_parse_error(error.what(), "/market/categorical/{marketId}", raw.value().dump()));
         }
     }
 
@@ -735,11 +710,11 @@ namespace opinion
         }
         try
         {
-            return Result<Market>::success(parse_market_detail(json::parse(raw.value())));
+            return Result<Market>::success(parse_market_detail(raw.value()));
         }
         catch (const std::exception &error)
         {
-            return Result<Market>::failure(make_parse_error(error.what(), "/market/slug/{slug}", raw.value()));
+            return Result<Market>::failure(make_parse_error(error.what(), "/market/slug/{slug}", raw.value().dump()));
         }
     }
 
@@ -752,7 +727,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             std::vector<Label> labels;
             if (result.contains("list") && result["list"].is_array())
             {
@@ -770,7 +745,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<std::vector<Label>>::failure(make_parse_error(error.what(), "/label", raw.value()));
+            return Result<std::vector<Label>>::failure(make_parse_error(error.what(), "/label", raw.value().dump()));
         }
     }
 
@@ -787,7 +762,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             Orderbook book;
             book.market = jstr(result, "market");
             book.token_id = jstr(result, "tokenId");
@@ -810,7 +785,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<Orderbook>::failure(make_parse_error(error.what(), "/token/orderbook", raw.value()));
+            return Result<Orderbook>::failure(make_parse_error(error.what(), "/token/orderbook", raw.value().dump()));
         }
     }
 
@@ -827,7 +802,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             LatestPrice price;
             price.token_id = jstr(result, "tokenId");
             price.price = jstr(result, "price");
@@ -838,7 +813,8 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<LatestPrice>::failure(make_parse_error(error.what(), "/token/latest-price", raw.value()));
+            return Result<LatestPrice>::failure(
+                make_parse_error(error.what(), "/token/latest-price", raw.value().dump()));
         }
     }
 
@@ -868,7 +844,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             std::vector<PricePoint> history;
             if (result.contains("history") && result["history"].is_array())
             {
@@ -881,7 +857,8 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<std::vector<PricePoint>>::failure(make_parse_error(error.what(), "/token/price-history", raw.value()));
+            return Result<std::vector<PricePoint>>::failure(
+                make_parse_error(error.what(), "/token/price-history", raw.value().dump()));
         }
     }
 
@@ -911,7 +888,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             QuoteTokenList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -925,7 +902,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<QuoteTokenList>::failure(make_parse_error(error.what(), "/quoteToken", raw.value()));
+            return Result<QuoteTokenList>::failure(make_parse_error(error.what(), "/quoteToken", raw.value().dump()));
         }
     }
 
@@ -942,7 +919,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             FeeRates rates;
             rates.token_id = jstr(result, "tokenId");
             rates.maker_fee_bps = jstr(result, "makerFeeBps");
@@ -951,7 +928,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<FeeRates>::failure(make_parse_error(error.what(), "/token/fee-rates", raw.value()));
+            return Result<FeeRates>::failure(make_parse_error(error.what(), "/token/fee-rates", raw.value().dump()));
         }
     }
 
@@ -1010,7 +987,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             ApiKeyCredential credential;
             credential.api_key = jstr(result, "apiKey");
             credential.wallet_address = jstr(result, "walletAddress");
@@ -1018,7 +995,8 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<ApiKeyCredential>::failure(make_parse_error(error.what(), "/auth/api-key", raw.value()));
+            return Result<ApiKeyCredential>::failure(
+                make_parse_error(error.what(), "/auth/api-key", raw.value().dump()));
         }
     }
 
@@ -1037,7 +1015,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             OrderList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -1051,7 +1029,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<OrderList>::failure(make_parse_error(error.what(), "/order", raw.value()));
+            return Result<OrderList>::failure(make_parse_error(error.what(), "/order", raw.value().dump()));
         }
     }
 
@@ -1068,7 +1046,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             if (result.contains("orderData") && result["orderData"].is_object())
             {
                 return Result<OrderRecord>::success(parse_order(result["orderData"]));
@@ -1077,7 +1055,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<OrderRecord>::failure(make_parse_error(error.what(), "/order/{orderId}", raw.value()));
+            return Result<OrderRecord>::failure(make_parse_error(error.what(), "/order/{orderId}", raw.value().dump()));
         }
     }
 
@@ -1090,7 +1068,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             ApiKeyCredential credential;
             credential.api_key = jstr(result, "apiKey");
             credential.wallet_address = jstr(result, "walletAddress");
@@ -1098,7 +1076,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<ApiKeyCredential>::failure(make_parse_error(error.what(), "/user/auth", raw.value()));
+            return Result<ApiKeyCredential>::failure(make_parse_error(error.what(), "/user/auth", raw.value().dump()));
         }
     }
 
@@ -1117,7 +1095,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             PositionList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -1131,7 +1109,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<PositionList>::failure(make_parse_error(error.what(), "/positions", raw.value()));
+            return Result<PositionList>::failure(make_parse_error(error.what(), "/positions", raw.value().dump()));
         }
     }
 
@@ -1154,7 +1132,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             PositionList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -1168,7 +1146,8 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<PositionList>::failure(make_parse_error(error.what(), "/positions/user/{walletAddress}", raw.value()));
+            return Result<PositionList>::failure(
+                make_parse_error(error.what(), "/positions/user/{walletAddress}", raw.value().dump()));
         }
     }
 
@@ -1187,7 +1166,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             TradeList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -1201,7 +1180,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<TradeList>::failure(make_parse_error(error.what(), "/trade", raw.value()));
+            return Result<TradeList>::failure(make_parse_error(error.what(), "/trade", raw.value().dump()));
         }
     }
 
@@ -1224,7 +1203,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             TradeList list;
             list.total = ji64(result, "total");
             if (result.contains("list") && result["list"].is_array())
@@ -1238,7 +1217,8 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<TradeList>::failure(make_parse_error(error.what(), "/trade/user/{walletAddress}", raw.value()));
+            return Result<TradeList>::failure(
+                make_parse_error(error.what(), "/trade/user/{walletAddress}", raw.value().dump()));
         }
     }
 
@@ -1251,7 +1231,7 @@ namespace opinion
         }
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             Balance balance;
             balance.chain_id = jstr(result, "chainId");
             balance.wallet_address = jstr(result, "walletAddress");
@@ -1273,7 +1253,7 @@ namespace opinion
         }
         catch (const std::exception &error)
         {
-            return Result<Balance>::failure(make_parse_error(error.what(), "/user/balance", raw.value()));
+            return Result<Balance>::failure(make_parse_error(error.what(), "/user/balance", raw.value().dump()));
         }
     }
 
@@ -1449,10 +1429,10 @@ namespace opinion
         }
         MutationResult mutation;
         mutation.accepted = true;
-        mutation.raw_result = raw.value();
+        mutation.raw_result = raw.value().dump();
         try
         {
-            const json result = json::parse(raw.value());
+            const auto &result = raw.value();
             if (result.contains("orderData") && result["orderData"].is_object())
             {
                 mutation.order_id = jstr(result["orderData"], "orderId");
@@ -1483,7 +1463,7 @@ namespace opinion
         MutationResult mutation;
         mutation.accepted = true;
         mutation.order_id = order_id;
-        mutation.raw_result = raw.value();
+        mutation.raw_result = raw.value().dump();
         return Result<MutationResult>::success(std::move(mutation));
     }
 } // namespace opinion

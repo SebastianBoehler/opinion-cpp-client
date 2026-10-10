@@ -154,6 +154,19 @@ namespace opinion
         {
             options.proxy_url = route.proxy_url;
         }
+        if (options.interface_name.empty())
+            options.interface_name = route.interface_name;
+        if (!options.proxy_url.empty() || !options.interface_name.empty())
+        {
+            ErrorCallback error;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mutex);
+                error = impl_->on_error;
+            }
+            if (error)
+                error("WebSocket proxy and interface routes are not supported by this transport");
+            return false;
+        }
         impl_->socket.setUrl(url);
         impl_->socket.setPingInterval(options.ping_interval_seconds);
         if (options.auto_reconnect)

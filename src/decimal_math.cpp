@@ -249,44 +249,6 @@ namespace opinion
         return strip_zeros(whole + fraction);
     }
 
-    std::array<std::uint8_t, 32> uint256_from_decimal(std::string_view decimal)
-    {
-        require_digits(decimal);
-        std::string digits = strip_zeros(std::string(decimal));
-        std::array<std::uint8_t, 32> out{};
-        if (digits == "0")
-        {
-            return out;
-        }
-        std::vector<std::uint8_t> little;
-        while (digits != "0")
-        {
-            int remainder = 0;
-            std::string next;
-            for (char character : digits)
-            {
-                const int value = remainder * 10 + (character - '0');
-                const int quotient = value / 256;
-                remainder = value % 256;
-                if (!next.empty() || quotient != 0)
-                {
-                    next.push_back(static_cast<char>('0' + quotient));
-                }
-            }
-            little.push_back(static_cast<std::uint8_t>(remainder));
-            digits = next.empty() ? "0" : next;
-            if (little.size() > 32)
-            {
-                throw std::invalid_argument("integer does not fit in uint256");
-            }
-        }
-        for (std::size_t index = 0; index < little.size(); ++index)
-        {
-            out[out.size() - 1 - index] = little[index];
-        }
-        return out;
-    }
-
     std::string uint256_to_decimal(const std::array<std::uint8_t, 32> &be)
     {
         auto multiply_by = [](std::string_view digits, int factor)

@@ -22,6 +22,7 @@ namespace opinion
         int ping_interval_seconds{30};
         // Application HEARTBEAT interval. The docs ask for one about every 30s.
         int heartbeat_interval_seconds{30};
+        // This IXWebSocket transport rejects nonempty routes before connecting.
         std::string proxy_url;
         std::string interface_name;
     };

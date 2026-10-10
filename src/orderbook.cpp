@@ -1,6 +1,6 @@
 #include "opinion/orderbook.hpp"
 
-#include "opinion/decimal_math.hpp"
+#include "book_decimal.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -10,104 +10,54 @@ namespace opinion
 {
     namespace
     {
-        bool is_zero_size(const std::string &size)
+        using detail::compare_prices;
+        bool before(const OrderbookLevel &left, const OrderbookLevel &right, bool bids)
         {
-            try
-            {
-                const auto dot = size.find('.');
-                const std::string whole = dot == std::string::npos ? size : size.substr(0, dot);
-                const std::string fraction = dot == std::string::npos ? std::string() : size.substr(dot + 1);
-                for (char character : whole + fraction)
-                {
-                    if (character != '0' && character != '+' && character != '.')
-                    {
-                        return false;
-                    }
-                }
-                return true;
-            }
-            catch (const std::exception &)
-            {
-                return false;
-            }
+            const int result = compare_prices(left.price, right.price);
+            return bids ? result > 0 : result < 0;
         }
-
-        void upsert(std::vector<OrderbookLevel> &levels, const std::string &price, const std::string &size)
+        void sort_levels(std::vector<OrderbookLevel> &levels, bool bids)
         {
-            const auto found = std::find_if(levels.begin(), levels.end(), [&](const OrderbookLevel &level) {
-                return level.price == price;
-            });
-            if (is_zero_size(size))
-            {
-                if (found != levels.end())
-                {
-                    levels.erase(found);
-                }
-                return;
-            }
-            if (found == levels.end())
-            {
-                levels.push_back(OrderbookLevel{price, size});
-            }
-            else
-            {
-                found->size = size;
-            }
-        }
-
-        int compare_prices(std::string_view left, std::string_view right)
-        {
-            const auto split = [](std::string_view text)
-            {
-                const auto dot = text.find('.');
-                std::string whole = dot == std::string_view::npos ? std::string(text) : std::string(text.substr(0, dot));
-                std::string fraction = dot == std::string_view::npos ? std::string() : std::string(text.substr(dot + 1));
-                if (whole.empty())
-                {
-                    whole = "0";
-                }
-                return std::make_pair(whole, fraction);
-            };
-            auto [left_whole, left_fraction] = split(left);
-            auto [right_whole, right_fraction] = split(right);
-            if (left_fraction.size() < right_fraction.size())
-            {
-                left_fraction.append(right_fraction.size() - left_fraction.size(), '0');
-            }
-            else if (right_fraction.size() < left_fraction.size())
-            {
-                right_fraction.append(left_fraction.size() - right_fraction.size(), '0');
-            }
-            return compare_decimal(left_whole + left_fraction, right_whole + right_fraction);
-        }
-
-        const OrderbookLevel *best_level(const std::vector<OrderbookLevel> &levels, bool highest)
-        {
-            const OrderbookLevel *best = nullptr;
             for (const auto &level : levels)
             {
-                if (!best)
-                {
-                    best = &level;
-                    continue;
-                }
-                try
-                {
-                    const int comparison = compare_prices(level.price, best->price);
-                    if ((highest && comparison > 0) || (!highest && comparison < 0))
-                    {
-                        best = &level;
-                    }
-                }
-                catch (const std::exception &)
-                {
-                }
+                detail::decimal_view(level.price);
+                detail::decimal_view(level.size);
             }
-            return best;
+            std::sort(levels.begin(), levels.end(),
+                      [bids](const auto &left, const auto &right) { return before(left, right, bids); });
+            for (std::size_t i = 1; i < levels.size(); ++i)
+                if (compare_prices(levels[i - 1].price, levels[i].price) == 0)
+                    throw std::invalid_argument("duplicate book price");
+        }
+        void upsert(std::vector<OrderbookLevel> &levels, const std::string &price, const std::string &size, bool bids)
+        {
+            const bool zero = detail::is_zero_size(size);
+            const auto found = std::lower_bound(levels.begin(), levels.end(), price,
+                                                [bids](const OrderbookLevel &level, const std::string &value)
+                                                {
+                                                    const int result = compare_prices(level.price, value);
+                                                    return bids ? result > 0 : result < 0;
+                                                });
+            const bool exists = found != levels.end() && compare_prices(found->price, price) == 0;
+            if (zero)
+            {
+                if (exists)
+                    levels.erase(found);
+            }
+            else if (exists)
+                found->size = size;
+            else
+                levels.insert(found, OrderbookLevel{price, size});
         }
     } // namespace
 
-    void LocalOrderbook::apply_snapshot(const Orderbook &snapshot) { book_ = snapshot; }
+    void LocalOrderbook::apply_snapshot(const Orderbook &snapshot)
+    {
+        auto next = snapshot;
+        sort_levels(next.bids, true);
+        sort_levels(next.asks, false);
+        book_ = std::move(next);
+    }
 
     bool LocalOrderbook::apply_depth_message(const std::string &json_message)
     {
@@ -122,46 +72,42 @@ namespace opinion
         {
             return false;
         }
-        if (book_.token_id.empty())
-        {
-            book_.token_id = token_id;
-        }
-        if (document.contains("marketId"))
-        {
-            book_.timestamp_ms = 0;
-        }
         const std::string side = document.value("side", "");
         const std::string price = document.value("price", "");
         const std::string size = document.value("size", "");
+        if (side != "bids" && side != "asks")
+            return false;
+        detail::decimal_view(price);
+        detail::decimal_view(size);
         if (side == "bids")
         {
-            upsert(book_.bids, price, size);
-        }
-        else if (side == "asks")
-        {
-            upsert(book_.asks, price, size);
+            upsert(book_.bids, price, size, true);
         }
         else
         {
-            return false;
+            upsert(book_.asks, price, size, false);
         }
+        if (book_.token_id.empty())
+            book_.token_id = token_id;
+        if (document.contains("marketId"))
+            book_.timestamp_ms = 0;
         return true;
     }
 
     std::optional<OrderbookLevel> LocalOrderbook::best_bid() const
     {
-        if (const auto *level = best_level(book_.bids, true))
+        if (!book_.bids.empty())
         {
-            return *level;
+            return book_.bids.front();
         }
         return std::nullopt;
     }
 
     std::optional<OrderbookLevel> LocalOrderbook::best_ask() const
     {
-        if (const auto *level = best_level(book_.asks, false))
+        if (!book_.asks.empty())
         {
-            return *level;
+            return book_.asks.front();
         }
         return std::nullopt;
     }

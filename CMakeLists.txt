@@ -67,6 +67,7 @@ FetchContent_MakeAvailable(json ixwebsocket secp256k1 ethash)
 add_library(opinion_client
     src/sdk_error.cpp
     src/decimal_math.cpp
+    src/uint256.cpp
     src/network.cpp
     src/environment.cpp
     src/http_client.cpp
@@ -93,7 +94,6 @@ target_link_libraries(opinion_client
         ixwebsocket
         secp256k1
         ethash
-    PRIVATE
         nlohmann_json::nlohmann_json
 )
 target_compile_options(opinion_client PRIVATE -Wall -Wextra -Wpedantic)
@@ -112,7 +112,17 @@ if(OPINION_CLIENT_BUILD_TESTS)
     add_executable(opinion_tests tests/test_sdk.cpp)
     target_link_libraries(opinion_tests PRIVATE opinion::client)
     add_test(NAME opinion_tests COMMAND opinion_tests)
+    add_executable(opinion_hot_path_tests tests/test_hot_paths.cpp)
+    target_link_libraries(opinion_hot_path_tests PRIVATE opinion::client)
+    add_test(NAME opinion_hot_path_tests COMMAND opinion_hot_path_tests)
+    add_executable(opinion_rest_tests tests/test_rest.cpp)
+    target_link_libraries(opinion_rest_tests PRIVATE opinion::client)
+    add_test(NAME opinion_rest_tests COMMAND opinion_rest_tests)
 endif()
 
 install(TARGETS opinion_client ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
 install(DIRECTORY include/opinion DESTINATION include)
+
+# Build explicitly; timings are diagnostic, not pass/fail tests.
+add_executable(opinion_hot_paths EXCLUDE_FROM_ALL benchmarks/hot_paths.cpp)
+target_link_libraries(opinion_hot_paths PRIVATE opinion::client)
