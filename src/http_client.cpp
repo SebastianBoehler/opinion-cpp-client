@@ -14,7 +14,12 @@ namespace opinion
         void ensure_curl()
         {
             static std::once_flag once;
-            std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+            std::call_once(once,
+                           []
+                           {
+                               if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+                                   throw std::runtime_error("curl_global_init failed");
+                           });
         }
 
         std::string trim_copy(std::string value)

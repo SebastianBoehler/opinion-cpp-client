@@ -1,6 +1,7 @@
 #include "opinion/order_signer.hpp"
 
 #include "opinion/decimal_math.hpp"
+#include "order_encoding.hpp"
 
 #include <ethash/keccak.hpp>
 #include <openssl/crypto.h>
@@ -17,95 +18,14 @@ namespace opinion
 {
     namespace
     {
-        int hex_nibble(char character)
-        {
-            if (character >= '0' && character <= '9')
-            {
-                return character - '0';
-            }
-            if (character >= 'a' && character <= 'f')
-            {
-                return character - 'a' + 10;
-            }
-            if (character >= 'A' && character <= 'F')
-            {
-                return character - 'A' + 10;
-            }
-            throw std::invalid_argument("invalid hex");
-        }
-
-        std::vector<std::uint8_t> parse_hex(std::string_view hex)
-        {
-            if (hex.size() >= 2 && hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X'))
-            {
-                hex.remove_prefix(2);
-            }
-            if (hex.size() % 2 != 0)
-            {
-                throw std::invalid_argument("hex length must be even");
-            }
-            std::vector<std::uint8_t> out(hex.size() / 2);
-            for (std::size_t index = 0; index < out.size(); ++index)
-            {
-                out[index] = static_cast<std::uint8_t>((hex_nibble(hex[index * 2]) << 4) |
-                                                       hex_nibble(hex[index * 2 + 1]));
-            }
-            return out;
-        }
-
-        std::array<std::uint8_t, 32> keccak_bytes(const std::uint8_t *data, std::size_t size)
-        {
-            const auto hash = ethash::keccak256(data, size);
-            std::array<std::uint8_t, 32> out{};
-            std::memcpy(out.data(), hash.bytes, 32);
-            return out;
-        }
-
-        std::array<std::uint8_t, 32> word_address(std::string_view address)
-        {
-            const auto bytes = parse_hex(address);
-            if (bytes.size() != 20)
-            {
-                throw std::invalid_argument("address must be 20 bytes");
-            }
-            std::array<std::uint8_t, 32> word{};
-            std::memcpy(word.data() + 12, bytes.data(), 20);
-            return word;
-        }
-
-        std::array<std::uint8_t, 32> word_uint(std::string_view decimal)
-        {
-            if (decimal.size() >= 2 && decimal[0] == '0' && (decimal[1] == 'x' || decimal[1] == 'X'))
-            {
-                const auto bytes = parse_hex(decimal);
-                if (bytes.size() > 32)
-                {
-                    throw std::invalid_argument("uint256 hex is too wide");
-                }
-                std::array<std::uint8_t, 32> word{};
-                std::memcpy(word.data() + (32 - bytes.size()), bytes.data(), bytes.size());
-                return word;
-            }
-            return uint256_from_decimal(decimal);
-        }
-
-        std::array<std::uint8_t, 32> word_string(std::string_view value)
-        {
-            return keccak_bytes(reinterpret_cast<const std::uint8_t *>(value.data()), value.size());
-        }
-
-        void append_word(std::vector<std::uint8_t> &out, const std::array<std::uint8_t, 32> &word)
-        {
-            const std::size_t offset = out.size();
-            out.resize(offset + word.size());
-            std::memcpy(out.data() + offset, word.data(), word.size());
-        }
-
-        std::array<std::uint8_t, 32> hash_encoded(const std::vector<std::uint8_t> &encoded)
-        {
-            return keccak_bytes(encoded.data(), encoded.size());
-        }
-
+        using detail::append_word;
+        using detail::hash_encoded;
+        using detail::hex_nibble;
+        using detail::keccak_bytes;
+        using detail::parse_hex;
+        using detail::word_address;
+        using detail::word_string;
+        using detail::word_uint;
         std::string lower_hex_address(std::string_view address)
         {
             const auto bytes = parse_hex(address);
@@ -272,20 +192,26 @@ namespace opinion
         }
         const std::string action_name = api_key_action_name(action);
         std::vector<std::uint8_t> domain;
-        append_word(domain, word_string("EIP712Domain(string name,string version,uint256 chainId)"));
+        domain.reserve(5 * 32);
+        static const auto auth_domain_type = word_string("EIP712Domain(string name,string version,uint256 chainId)");
+        static const auto auth_type =
+            word_string("OpinionApiKeyAuth(address walletAddress,string action,string timestamp)");
+        append_word(domain, auth_domain_type);
         append_word(domain, word_string(k_api_key_domain_name));
         append_word(domain, word_string(k_api_key_domain_version));
         append_word(domain, word_uint(std::to_string(impl_->chain_id)));
         const auto domain_separator = hash_encoded(domain);
 
         std::vector<std::uint8_t> message;
-        append_word(message, word_string("OpinionApiKeyAuth(address walletAddress,string action,string timestamp)"));
+        message.reserve(13 * 32);
+        append_word(message, auth_type);
         append_word(message, word_address(impl_->address));
         append_word(message, word_string(action_name));
         append_word(message, word_string(stamp));
         const auto struct_hash = hash_encoded(message);
 
         std::vector<std::uint8_t> digest_bytes{0x19, 0x01};
+        digest_bytes.reserve(66);
         digest_bytes.insert(digest_bytes.end(), domain_separator.begin(), domain_separator.end());
         digest_bytes.insert(digest_bytes.end(), struct_hash.begin(), struct_hash.end());
         const auto digest = hash_encoded(digest_bytes);
@@ -301,9 +227,14 @@ namespace opinion
     SignedCtfOrder OrderSigner::sign_order(const CtfOrder &order, std::string_view exchange_address) const
     {
         std::vector<std::uint8_t> domain;
-        append_word(domain, word_string("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"));
-        append_word(domain, word_string(k_order_domain_name));
-        append_word(domain, word_string(k_order_domain_version));
+        domain.reserve(5 * 32);
+        static const auto order_domain_type =
+            word_string("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+        static const auto order_name = word_string(k_order_domain_name);
+        static const auto order_version = word_string(k_order_domain_version);
+        append_word(domain, order_domain_type);
+        append_word(domain, order_name);
+        append_word(domain, order_version);
         append_word(domain, word_uint(std::to_string(impl_->chain_id)));
         append_word(domain, word_address(exchange_address));
         const auto domain_separator = hash_encoded(domain);
@@ -311,8 +242,10 @@ namespace opinion
         static constexpr const char *k_order_type =
             "Order(uint256 salt,address maker,address signer,address taker,uint256 tokenId,uint256 makerAmount,"
             "uint256 takerAmount,uint256 expiration,uint256 nonce,uint256 feeRateBps,uint8 side,uint8 signatureType)";
+        static const auto order_type = word_string(k_order_type);
         std::vector<std::uint8_t> message;
-        append_word(message, word_string(k_order_type));
+        message.reserve(13 * 32);
+        append_word(message, order_type);
         append_word(message, word_uint(order.salt));
         append_word(message, word_address(order.maker));
         append_word(message, word_address(order.signer));
@@ -328,6 +261,7 @@ namespace opinion
         const auto struct_hash = hash_encoded(message);
 
         std::vector<std::uint8_t> digest_bytes{0x19, 0x01};
+        digest_bytes.reserve(66);
         digest_bytes.insert(digest_bytes.end(), domain_separator.begin(), domain_separator.end());
         digest_bytes.insert(digest_bytes.end(), struct_hash.begin(), struct_hash.end());
         const auto digest = hash_encoded(digest_bytes);

@@ -7,6 +7,7 @@ namespace opinion
     // Outbound route for HTTP and WebSocket. proxy_url uses libcurl syntax
     // (http, https, socks5, socks5h). interface_name binds the socket, for
     // example "eth0" or a local address.
+    // HTTP supports these routes; WebSocket connect() reports unsupported routes.
     struct NetworkRoute
     {
         std::string proxy_url;

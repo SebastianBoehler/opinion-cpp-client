@@ -10,7 +10,9 @@
 
 namespace opinion
 {
-    // Local book. A REST snapshot replaces both sides. A market.depth.diff
+    // Local book. Snapshots are validated and sorted, with one level per numeric price.
+    // Invalid decimal values or duplicate snapshot prices throw std::invalid_argument.
+    // A REST snapshot replaces both sides. A market.depth.diff
     // message updates one price level. A size that parses as zero removes the
     // level; the channel docs show the fields but do not spell out the zero-size
     // convention.

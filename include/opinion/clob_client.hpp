@@ -5,6 +5,7 @@
 #include "opinion/order_signer.hpp"
 #include "opinion/sdk_error.hpp"
 #include "opinion/types.hpp"
+#include <nlohmann/json_fwd.hpp>
 
 #include <map>
 #include <string>
@@ -67,15 +68,14 @@ namespace opinion
         Environment environment_;
         std::string api_key_;
         mutable HttpClient http_;
+        mutable HttpClient order_http_;
 
         Result<ApiKeyCredential> exchange_api_key(const OrderSigner &signer,
                                                   ApiKeyAction action,
                                                   const std::string &method) const;
-        Result<std::string> call(const std::string &method,
-                                 const std::string &logical_path,
-                                 const std::map<std::string, std::string> &query,
-                                 const std::string &body,
-                                 bool authenticated,
-                                 const std::map<std::string, std::string> &extra_headers = {}) const;
+        Result<nlohmann::json> call(const std::string &method, const std::string &logical_path,
+                                    const std::map<std::string, std::string> &query, const std::string &body,
+                                    bool authenticated,
+                                    const std::map<std::string, std::string> &extra_headers = {}) const;
     };
 } // namespace opinion
